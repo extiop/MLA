@@ -18,8 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # compares pull request branch to target, which is its base reference
       - uses: boa-dev/criterion-compare-action@v3
         with:
-          branchName: ${{ github.base_ref }}
+          branchName: ${{ github.event.issue.pull_request.base.ref }}
           benchName: "bench_archive"
           token: ${{ secrets.GITHUB_TOKEN }}
