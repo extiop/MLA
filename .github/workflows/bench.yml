@@ -21,6 +21,6 @@ jobs:
       # compares pull request branch to target, which is its base reference
       - uses: boa-dev/criterion-compare-action@v3
         with:
-          branchName: ${{ github.event.issue.pull_request.base.ref }}
+          branchName: master
           benchName: "bench_archive"
           token: ${{ secrets.GITHUB_TOKEN }}
