@@ -24,6 +24,6 @@ jobs:
       - name: Compares PR branch to target
         uses: boa-dev/criterion-compare-action@v3
         with:
-          branchName: ${{ github.base_ref }}
+          branchName: ${{ github.base.ref }}
           benchName: "bench_archive"
           token: ${{ secrets.GITHUB_TOKEN }}
