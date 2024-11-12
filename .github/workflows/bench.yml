@@ -7,7 +7,7 @@ permissions:
 
 on:
   issue_comment:
-    types: [created, edited]
+    types: [created]
 
 jobs:
   runBenchmark:
@@ -17,10 +17,15 @@ jobs:
     name: Criterion benchmark
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # compares pull request branch to target, which is its base reference
-      - uses: boa-dev/criterion-compare-action@v3
-        with:
-          branchName: master
-          benchName: "bench_archive"
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Checkout Pull Request
+        run: hub pr checkout ${{ github.event.issue.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compares PR branch to target
+        uses: boa-dev/criterion-compare-action@v3
+          with:
+            branchName: ${{ github.event.pull_request.base.ref }}
+            benchName: "bench_archive"
+            token: ${{ secrets.GITHUB_TOKEN }}
