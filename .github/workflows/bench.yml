@@ -20,7 +20,7 @@ jobs:
     name: Criterion benchmark
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR repository
+      - name: Checkout to init the repository
         uses: actions/checkout@v4
       - name: Get PR base branch name
         run: |
