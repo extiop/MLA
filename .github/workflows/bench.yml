@@ -20,6 +20,8 @@ jobs:
     name: Criterion benchmark
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout to init the repository
+        uses: actions/checkout@v4
       - name: Get PR base branch name
         run: |
           branchName=$(curl -s https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} | python3 -c "import sys, json; print(json.load(sys.stdin)['base']['ref'])")
