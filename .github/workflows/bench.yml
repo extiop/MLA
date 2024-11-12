@@ -12,20 +12,18 @@ on:
 jobs:
   runBenchmark:
     if: |
-      github.event.issue.pull_request && 
+      github.event.issue.pull_request != null && 
       contains(github.event.comment.body, '/benchmark')
     name: Criterion benchmark
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
       - name: Checkout Pull Request
-        run: hub pr checkout ${{ github.event.issue.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
       - name: Compares PR branch to target
         uses: boa-dev/criterion-compare-action@v3
-          with:
-            branchName: ${{ github.event.pull_request.base.ref }}
-            benchName: "bench_archive"
-            token: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          branchName: ${{ github.event.pull_request.base.ref }}
+          benchName: "bench_archive"
+          token: ${{ secrets.GITHUB_TOKEN }}
