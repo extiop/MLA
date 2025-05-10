@@ -1,13 +1,13 @@
 [package]
-name = "mlar"
-description = "A wrapper around the MLA library for common usecases"
-version = "2.0.0"
-authors = ["Camille Mougey <camille.mougey@ssi.gouv.fr>"]
+name = "mlar-upgrade"
+description = "An archive upgrader towards MLA 2 from MLA 1"
+version = "1.0.0"
+authors = ["Club SSI <club@ssi.gouv.fr>"]
 edition = "2024"
 license = "LGPL-3.0-only"
 homepage = "https://github.com/ANSSI-FR/MLA"
 repository = "https://github.com/ANSSI-FR/MLA"
-readme = "../README.md"
+readme = "../../README.md"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,8 +15,8 @@ readme = "../README.md"
 [dependencies]
 clap = { version = "4.5", features = ["wrap_help"] }
 glob = "0.3"
-mla = { path = "../mla", version = "2" }
-mlakey-parser = { path = "../mlakey-parser", version = "0", default-features = false }
+mla = { path = "../../mla", version = "2" }
+mlakey-parser = { path = "../../mlakey-parser", version = "0", default-features = false }
 # Wait that all MLA dependencies upgrade below crate to do it too as there is a trait modification (CryptoRngCore -> CryptoRng + RngCore)
 rand = "0.8"
 x25519-dalek = "2.0"
@@ -29,7 +29,7 @@ zeroize = { version = "1.8", default-features = false}
 tar = "0.4"
 # Wait that all MLA dependencies upgrade below crate to do it too as there is a trait modification (CryptoRngCore -> CryptoRng + RngCore)
 rand_chacha = "0.3"
-lru = "0.13"
+lru = "0.14"
 ml-kem = "0.3.0-pre"
 
 [dev-dependencies]

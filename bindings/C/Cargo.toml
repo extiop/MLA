@@ -1,6 +1,6 @@
 [package]
 name = "mla-bindings-c"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Matthieu Buffet <matthieu.buffet@ssi.gouv.fr>","Camille Mougey <camille.mougey@ssi.gouv.fr>"]
 edition = "2018"
 
@@ -9,6 +9,6 @@ name = "mla"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-mla = { path = "../../mla", version = "1" }
+mla = { path = "../../mla", version = "2" }
 mlakey-parser = { path = "../../mlakey-parser", version = "0", default-features = false }
 
