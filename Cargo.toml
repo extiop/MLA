@@ -3,8 +3,8 @@ members = [
     "mla",
     "mlakey-parser",
     "mlar",
-    "mlar/mlar-upgrade",
-    "mlar/mlar-legacy",
+    "mlar/mlar-upgrader",
+    # "mlar/mlar-legacy",
     "mla-fuzz-afl",
     "bindings/C",
 ]

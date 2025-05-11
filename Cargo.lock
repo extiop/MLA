@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "mla"
-version = "1.4.0"
+version = "2.0.0"
 dependencies = [
  "aead",
  "aes",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "mla-bindings-c"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "mla",
  "mlakey-parser",
@@ -974,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "mla-fuzz-afl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "afl",
  "bincode",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "mlakey-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "curve25519-dalek",
  "der-parser",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "mlar"
-version = "1.3.0"
+version = "2.0.0"
 dependencies = [
  "assert_cmd",
  "assert_fs",
@@ -1022,6 +1022,13 @@ dependencies = [
  "tar",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "mlar-upgrader"
+version = "1.0.0"
+dependencies = [
+ "clap",
 ]
 
 [[package]]
