@@ -4,7 +4,7 @@ members = [
     "mlakey-parser",
     "mlar",
     "mlar/mlar-upgrader",
-    # "mlar/mlar-legacy",
+    "mlar/mlar-legacy",
     "mla-fuzz-afl",
     "bindings/C",
 ]

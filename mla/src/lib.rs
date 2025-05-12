@@ -40,7 +40,7 @@ pub mod helpers;
 // -------- Constants --------
 
 const MLA_MAGIC: &[u8; 3] = b"MLA";
-const MLA_FORMAT_VERSION: u32 = 1;
+const MLA_FORMAT_VERSION: u32 = 2;
 /// Maximum number of UTF-8 characters supported in each file's "name" (which is free
 /// to be used as a filename, an absolute path, or... ?). 32KiB was chosen because it
 /// supports any path a Windows NT, Linux, FreeBSD, OpenBSD, or NetBSD kernel supports.
