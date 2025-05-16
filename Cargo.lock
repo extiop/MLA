@@ -1135,6 +1135,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mlar-legacy"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "glob",
+ "lru",
+ "mla 1.4.0",
+ "mla 2.0.0",
+]
+
+[[package]]
 name = "mlar-upgrader"
 version = "0.1.0"
 dependencies = [

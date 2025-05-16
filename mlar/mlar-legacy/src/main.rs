@@ -1,12 +1,9 @@
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use glob::Pattern;
-use hkdf::Hkdf;
-use humansize::{DECIMAL, FormatSize};
 use lru::LruCache;
-use ml_kem::EncodedSizeUser;
 use mla::config::{ArchiveReaderConfig, ArchiveWriterConfig};
 use mla::crypto::hybrid::{HybridPrivateKey, HybridPublicKey};
-use mla::crypto::mlakey_parser::{generate_keypair, parse_mlakey_privkey, parse_mlakey_pubkey};
+use mla::crypto::mlakey_parser::{parse_mlakey_privkey, parse_mlakey_pubkey};
 use mla::errors::{Error, FailSafeReadError};
 use mla::helpers::linear_extract;
 use mla::layers::compress::CompressionLayerReader;
@@ -14,23 +11,22 @@ use mla::layers::encrypt::EncryptionLayerReader;
 use mla::layers::raw::RawLayerReader;
 use mla::layers::traits::{InnerReaderTrait, LayerReader};
 use mla::{
-    ArchiveFailSafeReader, ArchiveFile, ArchiveFooter, ArchiveHeader, ArchiveReader, ArchiveWriter,
-    Layers,
+    ArchiveFailSafeReader, ArchiveFooter, ArchiveHeader, ArchiveReader, ArchiveWriter, Layers,
 };
-use rand::SeedableRng;
-use rand_chacha::ChaChaRng;
-use sha2::{Digest, Sha512};
 use std::collections::{HashMap, HashSet};
 use std::error;
 use std::fmt;
-use std::fs::{self, File, read_dir};
-use std::io::{self, BufRead};
-use std::io::{Read, Seek, Write};
+use std::fs::{self, File};
+use std::io::{self, Read, Seek, Write};
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use tar::{Builder, Header};
-use zeroize::Zeroize;
+
+#[derive(Debug)]
+enum MlaVersion {
+    V1,
+    V2,
+}
 
 // ----- Error ------
 
@@ -294,28 +290,6 @@ fn open_failsafe_mla_file<'a>(
     Ok(ArchiveFailSafeReader::from_config(file, config)?)
 }
 
-fn add_file_to_tar<R: Read, W: Write>(
-    tar_file: &mut Builder<W>,
-    sub_file: ArchiveFile<R>,
-) -> io::Result<()> {
-    // Use indexes to avoid in-memory copy
-    let mut header = Header::new_gnu();
-    header.set_size(sub_file.size);
-    header.set_mode(0o444); // Create files as read-only
-    header.set_cksum();
-
-    // Force relative path, the trivial way (does not support Windows paths)
-    let filename = {
-        if Path::new(&sub_file.filename).is_absolute() {
-            format!("./{}", sub_file.filename)
-        } else {
-            sub_file.filename
-        }
-    };
-
-    tar_file.append_data(&mut header, &filename, sub_file.data)
-}
-
 /// Arguments for action 'extract' to match file names in the archive
 enum ExtractFileNameMatcher {
     /// Match a list of files, where the order does not matter
@@ -385,6 +359,23 @@ fn get_extracted_path(output_dir: &Path, file_name: &str) -> Option<PathBuf> {
         }
     }
     Some(file_dst)
+}
+
+/// In order to address MLA 1 or MLA 2 functions accordingly
+fn get_mla_version(matches: &ArgMatches) -> Result<MlaVersion, Error> {
+    // safe to use unwrap() because the option is required()
+    let input = matches.get_one::<PathBuf>("input").unwrap();
+    let mut file = File::open(input)?;
+    let mut buffer = [0u8; 4];
+    file.read_exact(&mut buffer)?;
+
+    // check MLA magic and version at the same time
+    let version = match &buffer {
+        b"MLA1" => Some(MlaVersion::V1),
+        b"MLA2" => Some(MlaVersion::V2),
+        _ => None,
+    };
+    version.ok_or(mla::errors::Error::UnsupportedVersion)
 }
 
 /// Create a file and associate parent directories in a given output directory
@@ -489,79 +480,96 @@ impl Write for FileWriter<'_> {
     }
 }
 
-/// Add whatever is specified by `path`
-fn add_file_or_dir(mla: &mut ArchiveWriter<OutputTypes>, path: &Path) -> Result<(), MlarError> {
-    if path.is_dir() {
-        add_dir(mla, path)?;
-    } else {
-        // This can lead to some non-obvious DuplicateFilename error (files
-        // that appear with different file names in the filesystem
-        // but mlar raising DuplicateFilename)
-        let filename = path.to_string_lossy();
-        let file = File::open(path)?;
-        let length = file.metadata()?.len();
-        eprintln!("{filename}");
-        mla.add_file(&filename, length, file)?;
-    }
-    Ok(())
-}
-
-/// Recursively explore a dir to add all the files
-/// Ignore empty directory
-fn add_dir(mla: &mut ArchiveWriter<OutputTypes>, dir: &Path) -> Result<(), MlarError> {
-    for file in read_dir(dir)? {
-        let new_path = file?.path();
-        add_file_or_dir(mla, &new_path)?;
-    }
-    Ok(())
-}
-
-fn add_from_stdin(mla: &mut ArchiveWriter<OutputTypes>) -> Result<(), MlarError> {
-    for line in io::stdin().lock().lines() {
-        add_file_or_dir(mla, Path::new(&line?))?;
-    }
-    Ok(())
-}
-
 // ----- Commands ------
 
-fn create(matches: &ArgMatches) -> Result<(), MlarError> {
-    let mut mla = writer_from_matches(matches)?;
+fn extract_v1(matches: &ArgMatches) -> Result<(), MlarError> {
+    let file_name_matcher = ExtractFileNameMatcher::from_matches(matches);
+    let output_dir = Path::new(matches.get_one::<PathBuf>("outputdir").unwrap());
+    let verbose = matches.get_flag("verbose");
 
-    if let Some(files) = matches.get_many::<PathBuf>("files") {
-        for filename in files {
-            if filename.as_os_str() == "-" {
-                add_from_stdin(&mut mla)?;
-            } else {
-                let path = Path::new(&filename);
-                add_file_or_dir(&mut mla, path)?;
-            }
-        }
-    };
-
-    mla.finalize()?;
-    Ok(())
-}
-
-fn list(matches: &ArgMatches) -> Result<(), MlarError> {
     let mut mla = open_mla_file(matches)?;
+
+    // Create the output directory, if it does not exist
+    if !output_dir.exists() {
+        fs::create_dir(output_dir).map_err(|err| {
+            eprintln!(
+                " [!] Error while creating output directory \"{}\" ({:?})",
+                output_dir.display(),
+                err
+            );
+            err
+        })?;
+    }
+    let output_dir = fs::canonicalize(output_dir).map_err(|err| {
+        eprintln!(
+            " [!] Error while canonicalizing output directory path \"{}\" ({:?})",
+            output_dir.display(),
+            err
+        );
+        err
+    })?;
 
     let mut iter: Vec<String> = mla.list_files()?.cloned().collect();
     iter.sort();
-    for fname in iter {
-        if matches.get_count("verbose") == 0 {
-            println!("{fname}");
-        } else {
-            let mla_file = mla.get_file(fname)?.expect("Unable to get the file");
-            let filename = mla_file.filename;
-            let size = mla_file.size.format_size(DECIMAL);
-            if matches.get_count("verbose") == 1 {
-                println!("{filename} - {size}");
-            } else if matches.get_count("verbose") >= 2 {
-                let hash = mla.get_hash(&filename)?.expect("Unable to get the hash");
-                println!("{} - {} ({})", filename, size, hex::encode(hash),);
+
+    if let ExtractFileNameMatcher::Anything = file_name_matcher {
+        // Optimisation: use linear extraction
+        if verbose {
+            println!("Extracting the whole archive using a linear extraction");
+        }
+        let cache = Mutex::new(LruCache::new(
+            NonZeroUsize::new(FILE_WRITER_POOL_SIZE).unwrap(),
+        ));
+        let mut export: HashMap<&String, FileWriter> = HashMap::new();
+        for fname in &iter {
+            match create_file(&output_dir, fname)? {
+                Some((_file, path)) => {
+                    export.insert(
+                        fname,
+                        FileWriter {
+                            path,
+                            cache: &cache,
+                            verbose,
+                            fname,
+                        },
+                    );
+                }
+                None => continue,
             }
         }
+        return Ok(linear_extract(&mut mla, &mut export)?);
+    }
+
+    for fname in iter {
+        // Filter files according to glob patterns or files given as parameters
+        if !file_name_matcher.match_file_name(&fname) {
+            continue;
+        }
+
+        // Look for the file in the archive
+        let mut sub_file = match mla.get_file(fname.clone()) {
+            Err(err) => {
+                eprintln!(" [!] Error while looking up subfile \"{fname}\" ({err:?})");
+                continue;
+            }
+            Ok(None) => {
+                eprintln!(" [!] Subfile \"{fname}\" indexed in metadata could not be found");
+                continue;
+            }
+            Ok(Some(subfile)) => subfile,
+        };
+        let (mut extracted_file, _path) = match create_file(&output_dir, &fname)? {
+            Some(file) => file,
+            None => continue,
+        };
+
+        if verbose {
+            println!("{fname}");
+        }
+        io::copy(&mut sub_file.data, &mut extracted_file).map_err(|err| {
+            eprintln!(" [!] Unable to extract \"{fname}\" ({err:?})");
+            err
+        })?;
     }
     Ok(())
 }
@@ -658,98 +666,21 @@ fn extract(matches: &ArgMatches) -> Result<(), MlarError> {
     Ok(())
 }
 
-fn cat(matches: &ArgMatches) -> Result<(), MlarError> {
-    let files_values = matches.get_many::<String>("files").unwrap();
-    let output = matches.get_one::<PathBuf>("output").unwrap();
-    let mut destination = destination_from_output_argument(output)?;
+fn repair_v1(matches: &ArgMatches) -> Result<(), MlarError> {
+    let mut mla = open_failsafe_mla_file(matches)?;
+    let mut mla_out = writer_from_matches(matches)?;
 
-    let mut mla = open_mla_file(matches)?;
-    if matches.get_flag("glob") {
-        // For each glob patterns, enumerate matching files and display them
-        let mut archive_files: Vec<String> = mla.list_files()?.cloned().collect();
-        archive_files.sort();
-        for arg_pattern in files_values {
-            let pat = match Pattern::new(arg_pattern) {
-                Ok(pat) => pat,
-                Err(err) => {
-                    eprintln!(" [!] Invalid glob pattern {arg_pattern:?} ({err:?})");
-                    continue;
-                }
-            };
-            for fname in archive_files.iter() {
-                if !pat.matches(fname) {
-                    continue;
-                }
-                match mla.get_file(fname.to_string()) {
-                    Err(err) => {
-                        eprintln!(" [!] Error while looking up file \"{fname}\" ({err:?})");
-                        continue;
-                    }
-                    Ok(None) => {
-                        eprintln!(
-                            " [!] Subfile \"{fname}\" indexed in metadata could not be found"
-                        );
-                        continue;
-                    }
-                    Ok(Some(mut subfile)) => {
-                        io::copy(&mut subfile.data, &mut destination).map_err(|err| {
-                            eprintln!(" [!] Unable to extract \"{fname}\" ({err:?})");
-                            err
-                        })?;
-                    }
-                }
-            }
+    // Convert
+    let status = mla.convert_to_archive(&mut mla_out)?;
+    match status {
+        FailSafeReadError::NoError => {}
+        FailSafeReadError::EndOfOriginalArchiveData => {
+            eprintln!("[WARNING] The whole archive has been recovered");
         }
-    } else {
-        // Retrieve all the files that are specified
-        for fname in files_values {
-            match mla.get_file(fname.to_string()) {
-                Err(err) => {
-                    eprintln!(" [!] Error while looking up file \"{fname}\" ({err:?})");
-                    continue;
-                }
-                Ok(None) => {
-                    eprintln!(" [!] File not found: \"{fname}\"");
-                    continue;
-                }
-                Ok(Some(mut subfile)) => {
-                    io::copy(&mut subfile.data, &mut destination).map_err(|err| {
-                        eprintln!(" [!] Unable to extract \"{fname}\" ({err:?})");
-                        err
-                    })?;
-                }
-            }
+        _ => {
+            eprintln!("[WARNING] Conversion ends with {status}");
         }
-    }
-    Ok(())
-}
-
-fn to_tar(matches: &ArgMatches) -> Result<(), MlarError> {
-    let mut mla = open_mla_file(matches)?;
-
-    // Safe to use unwrap() because the option is required()
-    let output = matches.get_one::<PathBuf>("output").unwrap();
-    let destination = destination_from_output_argument(output)?;
-    let mut tar_file = Builder::new(destination);
-
-    let mut archive_files: Vec<String> = mla.list_files()?.cloned().collect();
-    archive_files.sort();
-    for fname in archive_files {
-        let sub_file = match mla.get_file(fname.clone()) {
-            Err(err) => {
-                eprintln!(" [!] Error while looking up subfile \"{fname}\" ({err:?})");
-                continue;
-            }
-            Ok(None) => {
-                eprintln!(" [!] Subfile \"{fname}\" indexed in metadata could not be found");
-                continue;
-            }
-            Ok(Some(subfile)) => subfile,
-        };
-        if let Err(err) = add_file_to_tar(&mut tar_file, sub_file) {
-            eprintln!(" [!] Unable to add subfile \"{fname}\" to tarball ({err:?})");
-        }
-    }
+    };
     Ok(())
 }
 
@@ -768,159 +699,6 @@ fn repair(matches: &ArgMatches) -> Result<(), MlarError> {
             eprintln!("[WARNING] Conversion ends with {status}");
         }
     };
-    Ok(())
-}
-
-fn convert(matches: &ArgMatches) -> Result<(), MlarError> {
-    let mut mla = open_mla_file(matches)?;
-    let mut fnames: Vec<String> = if let Ok(iter) = mla.list_files() {
-        // Read the file list using metadata
-        iter.cloned().collect()
-    } else {
-        panic!("Files is malformed. Please consider repairing the file");
-    };
-    fnames.sort();
-
-    let mut mla_out = writer_from_matches(matches)?;
-
-    // Convert
-    for fname in fnames {
-        eprintln!("{fname}");
-        let sub_file = match mla.get_file(fname.clone()) {
-            Err(err) => {
-                eprintln!("Error while adding {fname} ({err:?})");
-                continue;
-            }
-            Ok(None) => {
-                eprintln!("Unable to find {fname}");
-                continue;
-            }
-            Ok(Some(mla)) => mla,
-        };
-        mla_out.add_file(&sub_file.filename, sub_file.size, sub_file.data)?;
-    }
-    mla_out.finalize().expect("Finalization error");
-
-    Ok(())
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn keygen(matches: &ArgMatches) -> Result<(), MlarError> {
-    // Safe to use unwrap() because of the requirement
-    let output_base = matches.get_one::<PathBuf>("output").unwrap();
-
-    let mut output_pub = File::create(Path::new(output_base).with_extension("pub"))
-        .expect("Unable to create the public file");
-    let mut output_priv = File::create(output_base).expect("Unable to create the private file");
-
-    // handle seed
-    //
-    // if set, seed the PRNG with `SHA512(seed bytes as UTF8)[0..32]`
-    // if not, seed the PRNG with the dedicated API
-    let mut csprng = match matches.get_one::<String>("seed") {
-        Some(seed) => {
-            eprintln!(
-                "[WARNING] A seed-based keygen operation is deterministic. An attacker knowing the seed knows the private key and is able to decrypt associated messages"
-            );
-            let mut hseed = [0u8; 32];
-            hseed.copy_from_slice(&Sha512::digest(seed.as_bytes())[0..32]);
-            ChaChaRng::from_seed(hseed)
-        }
-        None => ChaChaRng::from_entropy(),
-    };
-
-    let key_pair = generate_keypair(&mut csprng).expect("Error while generating the key-pair");
-
-    // Output the public key in PEM format, to ease integration in text based
-    // configs
-    output_pub
-        .write_all(key_pair.public_as_pem().as_bytes())
-        .expect("Error writing the public key");
-
-    // Output the private key in DER format, to avoid common mistakes
-    output_priv
-        .write_all(&key_pair.private_der)
-        .expect("Error writing the private key");
-    Ok(())
-}
-
-const DERIVE_PATH_SALT: &[u8; 15] = b"PATH DERIVATION";
-
-/// Return a seed based on a path and an hybrid private key
-///
-/// The derivation scheme is based on the same ideas than `mla::crypto::hybrid::combine`, ie.
-/// 1. a dual-PRF (HKDF-Extract with a uniform random salt [1]) to extract entropy from the private key
-/// 2. HKDF-Expand to derive along the given path
-///
-/// seed = HKDF-SHA512(
-///     salt=HKDF-SHA512-Extract(salt=0, ikm=ECC-key),
-///     ikm=MLKEM-key,
-///     info="PATH DERIVATION" . Derivation path
-/// )
-///
-/// Note: the secret is consumed on call
-/// [1] https://eprint.iacr.org/2023/861
-fn apply_derive(path: &str, mut src: HybridPrivateKey) -> [u8; 32] {
-    // Force uniform-randomness on ECC-key, used as the future HKDF "salt" argument
-    let (dprf_salt, _hkdf) = Hkdf::<Sha512>::extract(None, src.private_key_ecc.as_bytes());
-
-    // `salt` being uniformly random, HKDF can be viewed as a dual-PRF
-    let hkdf: Hkdf<Sha512> = Hkdf::new(Some(&dprf_salt), &src.private_key_ml.as_bytes());
-    let mut seed = [0u8; 32];
-    hkdf.expand_multi_info(&[DERIVE_PATH_SALT, path.as_bytes()], &mut seed)
-        .expect("Unexpected error while derivating along the path");
-
-    // Consume the secret
-    src.zeroize();
-
-    seed
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn keyderive(matches: &ArgMatches) -> Result<(), MlarError> {
-    // Safe to use unwrap() because of the requirement
-    let output_base = matches.get_one::<PathBuf>("output").unwrap();
-
-    let mut output_pub = File::create(Path::new(output_base).with_extension("pub"))
-        .expect("Unable to create the public file");
-    let mut output_priv = File::create(output_base).expect("Unable to create the private file");
-
-    // Safe to use unwrap() because of the requirement
-    let private_key_arg = matches.get_one::<PathBuf>("input").unwrap();
-    let mut file = File::open(private_key_arg)?;
-
-    // Load the the key in-memory and parse it
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    let mut secret = parse_mlakey_privkey(&buf).expect("[ERROR] Unable to read the private key");
-
-    // Derive the key along the path
-    let mut key_pair = None;
-    for path in matches
-        .get_many::<String>("path")
-        .expect("[ERROR] At least one path must be provided")
-    {
-        let mut csprng = ChaChaRng::from_seed(apply_derive(path, secret));
-
-        // Use the high-level API to avoid duplicating code from curve25519-parser in case of futur changes
-        key_pair =
-            Some(generate_keypair(&mut csprng).expect("Error while generating the key-pair"));
-        secret = parse_mlakey_privkey(&key_pair.as_ref().unwrap().private_der).unwrap();
-    }
-
-    // Safe to unwrap, there is at least one derivation path
-    let key_pair = key_pair.unwrap();
-
-    // Output the public key in PEM format, to ease integration in text based
-    // configs
-    output_pub
-        .write_all(key_pair.public_as_pem().as_bytes())
-        .expect("Error writing the public key");
-
-    // Output the private key in DER format, to avoid common mistakes
-    output_priv
-        .write_all(&key_pair.private_der)
-        .expect("Error writing the private key");
     Ok(())
 }
 
@@ -990,6 +768,54 @@ impl ArchiveInfoReader {
     }
 }
 
+fn info_v1(matches: &ArgMatches) -> Result<(), MlarError> {
+    // Safe to use unwrap() because the option is required()
+    let mla_file = matches.get_one::<PathBuf>("input").unwrap();
+    let path = Path::new(&mla_file);
+    let mut file = File::open(path)?;
+
+    // Get Header
+    let header = ArchiveHeader::from(&mut file)?;
+
+    let encryption = header.config.layers_enabled.contains(Layers::ENCRYPT);
+    let compression = header.config.layers_enabled.contains(Layers::COMPRESS);
+
+    // Instantiate reader as needed
+    let mla = if compression {
+        let config = readerconfig_from_matches(matches);
+        Some(ArchiveInfoReader::from_config(file, config)?)
+    } else {
+        None
+    };
+
+    // Format Version
+    println!("Format version: {}", header.format_version);
+
+    // Encryption config
+    println!("Encryption: {encryption}");
+    if encryption && matches.get_flag("verbose") {
+        let encrypt_config = header.config.encrypt.expect("Encryption config not found");
+        println!(
+            "  Recipients: {}",
+            encrypt_config
+                .hybrid_multi_recipient_encapsulate_key
+                .count_keys()
+        );
+    }
+
+    // Compression config
+    println!("Compression: {compression}");
+    if compression && matches.get_flag("verbose") {
+        let mla_ = mla.expect("MLA is required for verbose compression info");
+        let output_size = mla_.get_files_size()?;
+        let compressed_size: u64 = mla_.compressed_size.expect("Missing compression size");
+        let compression_rate = output_size as f64 / compressed_size as f64;
+        println!("  Compression rate: {compression_rate:.2}");
+    }
+
+    Ok(())
+}
+
 fn info(matches: &ArgMatches) -> Result<(), MlarError> {
     // Safe to use unwrap() because the option is required()
     let mla_file = matches.get_one::<PathBuf>("input").unwrap();
@@ -1051,7 +877,7 @@ fn app() -> clap::Command {
         Arg::new("private_keys")
             .long("private_keys")
             .short('k')
-            .help("Candidates ED25519 private key paths (DER or PEM format)")
+            .help("Candidates ED25519 or hybrid private key or paths (DER or PEM format)")
             .num_args(1)
             .action(ArgAction::Append)
             .value_parser(value_parser!(PathBuf)),
@@ -1064,42 +890,18 @@ fn app() -> clap::Command {
             .value_parser(value_parser!(PathBuf))
             .required(true),
         Arg::new("public_keys")
-            .help("ED25519 Public key paths (DER or PEM format)")
+            .help("ED25519 or hybrid public key paths (DER or PEM format)")
             .long("pubkey")
             .short('p')
             .num_args(1)
             .action(ArgAction::Append)
             .value_parser(value_parser!(PathBuf)),
-        Arg::new("layers")
-            .long("layers")
-            .short('l')
-            .help("Layers to use. Default is 'compress,encrypt'")
-            .value_parser(["compress", "encrypt"])
-            .num_args(0..=1)
-            .action(ArgAction::Append),
-        Arg::new("compression_level")
-            .group("Compression layer")
-            .short('q')
-            .long("compression_level")
-            .value_parser(value_parser!(u32).range(0..=11))
-            .help("Compression level (0-11); ; bigger values cause denser, but slower compression"),
     ];
 
     // Main parsing
     Command::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
-        .subcommand(
-            Command::new("create")
-                .about("Create a new MLA Archive")
-                .args(&output_args)
-                .arg(
-                    Arg::new("files")
-                    .help("Files to add")
-                    .value_parser(value_parser!(PathBuf))
-                    .action(ArgAction::Append)
-                ),
-        )
         .subcommand(
             Command::new("list")
                 .about("List files inside a MLA Archive")
@@ -1141,108 +943,10 @@ fn app() -> clap::Command {
                 ),
         )
         .subcommand(
-            Command::new("cat")
-                .about("Display files from a MLA Archive, like 'cat'")
-                .args(&input_args)
-                .arg(
-                    Arg::new("output")
-                        .help("Output file where files are displayed")
-                        .long("output")
-                        .short('o')
-                        .num_args(1)
-                        .value_parser(value_parser!(PathBuf))
-                        .default_value("-"),
-                )
-                .arg(
-                    Arg::new("glob")
-                        .long("glob")
-                        .short('g')
-                        .action(ArgAction::SetTrue)
-                        .help("Treat given files as glob patterns"),
-                )
-                .arg(
-                    Arg::new("files")
-                        .required(true)
-                        .help("List of displayed files"),
-                ),
-        )
-        .subcommand(
-            Command::new("to-tar")
-                .about("Convert a MLA Archive to a TAR Archive")
-                .args(&input_args)
-                .arg(
-                    Arg::new("output")
-                        .help("Tar Archive path")
-                        .long("output")
-                        .short('o')
-                        .num_args(1)
-                        .value_parser(value_parser!(PathBuf))
-                        .required(true),
-                ),
-        )
-        .subcommand(
             Command::new("repair")
                 .about("Try to repair a MLA Archive into a fresh MLA Archive")
                 .args(&input_args)
                 .args(&output_args),
-        )
-        .subcommand(
-            Command::new("convert")
-                .about(
-                    "Convert a MLA Archive to a fresh new one, with potentially different options",
-                )
-                .args(&input_args)
-                .args(&output_args),
-        )
-        .subcommand(
-            Command::new("keygen")
-                .about(
-                    "Generate a public/private keypair, in OpenSSL Ed25519 format, to be used by mlar",
-                )
-                .arg(
-                    Arg::new("output")
-                        .help("Output file for the private key. The public key is in {output}.pub")
-                        .num_args(1)
-                        .value_parser(value_parser!(PathBuf))
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("seed")
-                        .help("Initial seed for deterministic key generation. THE SEED IS AS SECRET AS THE RESULTING PRIVATE KEY. USE THIS OPTION ONLY IF NECESSARY")
-                        .long("seed")
-                        .short('s')
-                        .num_args(1)
-                        .value_parser(value_parser!(String))
-                )
-        )
-        .subcommand(
-            Command::new("keyderive")
-                .about(
-                    "Derive a new public/private keypair from an existing one and a public path, in OpenSSL Ed25519 format, to be used by mlar",
-                )
-                .arg(
-                    Arg::new("input")
-                        .help("Input private key file")
-                        .num_args(1)
-                        .value_parser(value_parser!(PathBuf))
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("output")
-                        .help("Output file for the private key. The public key is in {output}.pub")
-                        .num_args(1)
-                        .value_parser(value_parser!(PathBuf))
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("path")
-                    .help("Public derivation path")
-                    .long("path")
-                    .short('p')
-                    .num_args(1)
-                    .action(ArgAction::Append)
-                    .value_parser(value_parser!(String))
-                )
         )
         .subcommand(
             Command::new("info")
@@ -1264,30 +968,51 @@ fn main() {
     // Launch sub-command
     let help = app.render_long_help();
     let matches = app.get_matches();
-    let res = if let Some(matches) = matches.subcommand_matches("create") {
-        create(matches)
-    } else if let Some(matches) = matches.subcommand_matches("list") {
-        list(matches)
-    } else if let Some(matches) = matches.subcommand_matches("extract") {
-        extract(matches)
-    } else if let Some(matches) = matches.subcommand_matches("cat") {
-        cat(matches)
-    } else if let Some(matches) = matches.subcommand_matches("to-tar") {
-        to_tar(matches)
-    } else if let Some(matches) = matches.subcommand_matches("repair") {
-        repair(matches)
-    } else if let Some(matches) = matches.subcommand_matches("convert") {
-        convert(matches)
-    } else if let Some(matches) = matches.subcommand_matches("keygen") {
-        keygen(matches)
-    } else if let Some(matches) = matches.subcommand_matches("keyderive") {
-        keyderive(matches)
-    } else if let Some(matches) = matches.subcommand_matches("info") {
-        info(matches)
-    } else {
-        eprintln!("Error: at least one command required.");
-        eprintln!("{}", &help);
-        std::process::exit(1);
+    // in order to address MLA 1 or MLA 2 functions accordingly
+
+    let mla_version = get_mla_version(&matches).map_err(|_| mla::errors::Error::UnsupportedVersion);
+
+    let res = match mla_version {
+        Ok(MlaVersion::V1) => matches.subcommand().map_or_else(
+            || {
+                eprintln!("Error: at least one command required.");
+                eprintln!("{}", &help);
+                std::process::exit(1);
+            },
+            |(cmd, matches)| match cmd {
+                "extract" => extract_v1(matches),
+                "repair" => repair_v1(matches),
+                "info" => info_v1(matches),
+
+                _ => {
+                    eprintln!("Error: unknown command.");
+                    eprintln!("{}", &help);
+                    std::process::exit(1);
+                }
+            },
+        ),
+
+        Ok(MlaVersion::V2) => matches.subcommand().map_or_else(
+            || {
+                eprintln!("Error: at least one command required.");
+
+                eprintln!("{}", &help);
+
+                std::process::exit(1);
+            },
+            |(cmd, matches)| match cmd {
+                "extract" => extract(matches),
+                "repair" => repair(matches),
+                "info" => info(matches),
+
+                _ => {
+                    eprintln!("Error: unknown command.");
+                    eprintln!("{}", &help);
+                    std::process::exit(1);
+                }
+            },
+        ),
+        _ => Ok(()),
     };
 
     if let Err(err) = res {
@@ -1299,50 +1024,9 @@ fn main() {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use mla::crypto::hybrid::{MLKEMDecapsulationKey, generate_keypair_from_rng};
-    use std::iter::FromIterator;
-    use x25519_dalek::StaticSecret;
 
     #[test]
     fn verify_app() {
         app().debug_assert();
-    }
-
-    #[test]
-    /// Naive checks for "apply_derive", to avoid naive erros
-    fn check_apply_derive() {
-        // Ensure determinism
-        let rng = ChaChaRng::from_seed([0u8; 32]);
-        let (privkey, _pubkey) = generate_keypair_from_rng(rng);
-
-        // Derive along "test"
-        let path = "test";
-        let seed = apply_derive(path, privkey);
-        assert_ne!(seed, [0u8; 32]);
-
-        // Derive along "test2"
-        let rng = ChaChaRng::from_seed([0u8; 32]);
-        let (privkey, _pubkey) = generate_keypair_from_rng(rng);
-        let path = "test2";
-        let seed2 = apply_derive(path, privkey);
-        assert_ne!(seed, seed2);
-
-        // Ensure the secret depends on both keys
-        let mut priv_keys = vec![];
-        for i in 0..1 {
-            for j in 0..1 {
-                priv_keys.push(HybridPrivateKey {
-                    private_key_ecc: StaticSecret::from([i as u8; 32]),
-                    private_key_ml: MLKEMDecapsulationKey::from_bytes(&[j as u8; 3168].into()),
-                });
-            }
-        }
-
-        // Generated seeds for (0, 0), (0, 1), (1, 0) and (1, 1) must be different
-        let seeds: Vec<_> = priv_keys
-            .into_iter()
-            .map(|pkey| apply_derive("test", pkey))
-            .collect();
-        assert_eq!(HashSet::<_>::from_iter(seeds.iter()).len(), seeds.len());
     }
 }
