@@ -1,3 +1,4 @@
+use byteorder::{LittleEndian, ReadBytesExt};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use glob::Pattern;
 use lru::LruCache;
@@ -15,7 +16,7 @@ use mla::{
 };
 use std::collections::{HashMap, HashSet};
 use std::error;
-use std::fmt;
+use std::fmt::{self};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
 use std::num::NonZeroUsize;
@@ -364,18 +365,26 @@ fn get_extracted_path(output_dir: &Path, file_name: &str) -> Option<PathBuf> {
 
 /// In order to address MLA 1 or MLA 2 functions accordingly
 fn get_mla_version(matches: &ArgMatches) -> Result<MlaVersion, Error> {
-    // safe to use unwrap() because the option is required()
+    const MLA_MAGIC: &[u8; 3] = b"MLA";
+    const MLA_FORMAT_VERSION_V1: u32 = 1;
+    const MLA_FORMAT_VERSION_V2: u32 = 2;
+
     let input = matches.get_one::<PathBuf>("input").unwrap();
     let mut file = File::open(input)?;
-    let mut buffer = [0u8; 4];
-    file.read_exact(&mut buffer)?;
 
-    // check MLA magic and version at the same time
-    let version = match &buffer {
-        b"MLA1" => Some(MlaVersion::V1),
-        b"MLA2" => Some(MlaVersion::V2),
+    let mut buf = vec![00u8; MLA_MAGIC.len()];
+    file.read_exact(buf.as_mut_slice())?;
+    if buf != MLA_MAGIC {
+        return Err(Error::WrongMagic);
+    }
+
+    let format_version = file.read_u32::<LittleEndian>()?;
+    let version = match format_version {
+        MLA_FORMAT_VERSION_V1 => Some(MlaVersion::V1),
+        MLA_FORMAT_VERSION_V2 => Some(MlaVersion::V2),
         _ => None,
     };
+
     version.ok_or(mla::errors::Error::UnsupportedVersion)
 }
 
@@ -1033,68 +1042,61 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn check_archive_format_v1() {
+    fn test_archive_format_v1() {
         // temporary directory for output as we don't know if we can write in current one
         let temp_dir = env::temp_dir();
 
         // mlar-legacy args
         let input = "archive_v1.mla";
-        let private_keys = "test_x25519_archive_v1.pem";
 
         // temporary locations
         let temp_input = temp_dir.join(input);
-        let temp_private_keys = temp_dir.join(private_keys);
 
         // copy input, private_keys, public_keys to temp_dir
         fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
-        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
 
         env::set_current_dir(&temp_dir).unwrap();
 
         // subcommand not relevant
-        let matches =
-            app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
-        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+        let matches = app().get_matches_from(["mlar-legacy", "info", "-i", input]);
+        let matches = matches
+            .subcommand_matches("info")
+            .expect("info subcommand required");
 
         assert_eq!(MlaVersion::V1, get_mla_version(matches).unwrap());
 
         // Clean up
         fs::remove_file(temp_input).unwrap();
-        fs::remove_file(temp_private_keys).unwrap();
     }
 
     #[test]
-    fn check_archive_format_v2() {
+    fn test_archive_format_v2() {
         // use get_mla_version() to detect MLA 1
         // temporary directory for output as we don't know if we can write in current one
         let temp_dir = env::temp_dir();
 
         // mlar-legacy args
         let input = "archive_v2.mla";
-        let private_keys = "test_mlakey_archive_v2.pem";
 
         // temporary locations
         let temp_input = temp_dir.join(input);
-        let temp_private_keys = temp_dir.join(private_keys);
 
         // copy input, private_keys, public_keys to temp_dir
         fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
-        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
 
         env::set_current_dir(&temp_dir).unwrap();
 
         // subcommand not relevant
-        let matches =
-            app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
-        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+        let matches = app().get_matches_from(["mlar-legacy", "info", "-i", input]);
+        let matches = matches
+            .subcommand_matches("info")
+            .expect("info subcommand required");
 
         assert_eq!(MlaVersion::V2, get_mla_version(matches).unwrap());
 
         // Clean up
         fs::remove_file(temp_input).unwrap();
-        fs::remove_file(temp_private_keys).unwrap();
     }
-
 
     #[test]
     fn test_extract_v1() {
@@ -1117,7 +1119,9 @@ pub(crate) mod tests {
 
         let matches =
             app().get_matches_from(["mlar-legacy", "extract", "-k", private_keys, "-i", input]);
-        let matches = matches.subcommand_matches("extract").expect("extract subcommand required");
+        let matches = matches
+            .subcommand_matches("extract")
+            .expect("extract subcommand required");
 
         assert!(extract_v1(matches).is_ok());
 
@@ -1147,7 +1151,9 @@ pub(crate) mod tests {
 
         let matches =
             app().get_matches_from(["mlar-legacy", "extract", "-k", private_keys, "-i", input]);
-        let matches = matches.subcommand_matches("extract").expect("extract subcommand required");
+        let matches = matches
+            .subcommand_matches("extract")
+            .expect("extract subcommand required");
 
         assert!(extract(matches).is_ok());
 
@@ -1191,7 +1197,9 @@ pub(crate) mod tests {
             "-p",
             public_keys,
         ]);
-        let matches = matches.subcommand_matches("repair").expect("repair subcommand required");
+        let matches = matches
+            .subcommand_matches("repair")
+            .expect("repair subcommand required");
 
         assert!(repair_v1(matches).is_ok());
 
@@ -1236,7 +1244,9 @@ pub(crate) mod tests {
             "-p",
             public_keys,
         ]);
-        let matches = matches.subcommand_matches("repair").expect("repair subcommand required");
+        let matches = matches
+            .subcommand_matches("repair")
+            .expect("repair subcommand required");
 
         assert!(repair(matches).is_ok());
 
@@ -1267,7 +1277,9 @@ pub(crate) mod tests {
 
         let matches =
             app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
-        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+        let matches = matches
+            .subcommand_matches("info")
+            .expect("info subcommand required");
 
         assert!(info_v1(matches).is_ok());
 
@@ -1297,7 +1309,9 @@ pub(crate) mod tests {
 
         let matches =
             app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
-        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+        let matches = matches
+            .subcommand_matches("info")
+            .expect("info subcommand required");
 
         assert!(info(matches).is_ok());
 
