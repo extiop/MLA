@@ -22,6 +22,7 @@ use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg_attr(test, derive(PartialEq))]
 #[derive(Debug)]
 enum MlaVersion {
     V1,
@@ -1024,9 +1025,284 @@ fn main() {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn verify_app() {
         app().debug_assert();
+    }
+
+    #[test]
+    fn check_archive_format_v1() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-legacy args
+        let input = "archive_v1.mla";
+        let private_keys = "test_x25519_archive_v1.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        // subcommand not relevant
+        let matches =
+            app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
+        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+
+        assert_eq!(MlaVersion::V1, get_mla_version(matches).unwrap());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+    }
+
+    #[test]
+    fn check_archive_format_v2() {
+        // use get_mla_version() to detect MLA 1
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-legacy args
+        let input = "archive_v2.mla";
+        let private_keys = "test_mlakey_archive_v2.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        // subcommand not relevant
+        let matches =
+            app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
+        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+
+        assert_eq!(MlaVersion::V2, get_mla_version(matches).unwrap());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+    }
+
+
+    #[test]
+    fn test_extract_v1() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-legacy args
+        let input = "archive_v1.mla";
+        let private_keys = "test_x25519_archive_v1.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        let matches =
+            app().get_matches_from(["mlar-legacy", "extract", "-k", private_keys, "-i", input]);
+        let matches = matches.subcommand_matches("extract").expect("extract subcommand required");
+
+        assert!(extract_v1(matches).is_ok());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+    }
+
+    #[test]
+    fn test_extract() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-legacy args
+        let input = "archive_v2.mla";
+        let private_keys = "test_mlakey_archive_v2.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        let matches =
+            app().get_matches_from(["mlar-legacy", "extract", "-k", private_keys, "-i", input]);
+        let matches = matches.subcommand_matches("extract").expect("extract subcommand required");
+
+        assert!(extract(matches).is_ok());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+    }
+
+    #[test]
+    fn test_repair_v1() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-upgrade args
+        let input = "archive_v1.mla";
+        let output = temp_dir.join("archive_v1_repaired.mla");
+        let private_keys = "test_x25519_archive_v1.pem";
+        let public_keys = "test_x25519_archive_v1_pub.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+        let temp_public_keys = temp_dir.join(public_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+        fs::copy(format!("../../samples/{public_keys}"), &temp_public_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        let matches = app().get_matches_from([
+            "mlar-legacy",
+            "repair",
+            "-k",
+            private_keys,
+            "-i",
+            input,
+            "-o",
+            output.to_str().unwrap(),
+            "-p",
+            public_keys,
+        ]);
+        let matches = matches.subcommand_matches("repair").expect("repair subcommand required");
+
+        assert!(repair_v1(matches).is_ok());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+        fs::remove_file(temp_public_keys).unwrap();
+    }
+
+    #[test]
+    fn test_repair() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-upgrade args
+        let input = "archive_v2.mla";
+        let output = temp_dir.join("archive_v2_repaired.mla");
+        let private_keys = "test_mlakey_archive_v2.pem";
+        let public_keys = "test_mlakey_archive_v2_pub.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+        let temp_public_keys = temp_dir.join(public_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+        fs::copy(format!("../../samples/{public_keys}"), &temp_public_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        let matches = app().get_matches_from([
+            "mlar-legacy",
+            "repair",
+            "-k",
+            private_keys,
+            "-i",
+            input,
+            "-o",
+            output.to_str().unwrap(),
+            "-p",
+            public_keys,
+        ]);
+        let matches = matches.subcommand_matches("repair").expect("repair subcommand required");
+
+        assert!(repair(matches).is_ok());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+        fs::remove_file(temp_public_keys).unwrap();
+    }
+
+    #[test]
+    fn test_info_v1() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-upgrade args
+        let input = "archive_v1.mla";
+        let private_keys = "test_x25519_archive_v1.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        let matches =
+            app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
+        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+
+        assert!(info_v1(matches).is_ok());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
+    }
+
+    #[test]
+    fn test_info() {
+        // temporary directory for output as we don't know if we can write in current one
+        let temp_dir = env::temp_dir();
+
+        // mlar-upgrade args
+        let input = "archive_v2.mla";
+        let private_keys = "test_mlakey_archive_v2.pem";
+
+        // temporary locations
+        let temp_input = temp_dir.join(input);
+        let temp_private_keys = temp_dir.join(private_keys);
+
+        // copy input, private_keys, public_keys to temp_dir
+        fs::copy(format!("../../samples/{input}"), &temp_input).unwrap();
+        fs::copy(format!("../../samples/{private_keys}"), &temp_private_keys).unwrap();
+
+        env::set_current_dir(&temp_dir).unwrap();
+
+        let matches =
+            app().get_matches_from(["mlar-legacy", "info", "-k", private_keys, "-i", input]);
+        let matches = matches.subcommand_matches("info").expect("info subcommand required");
+
+        assert!(info(matches).is_ok());
+
+        // Clean up
+        fs::remove_file(temp_input).unwrap();
+        fs::remove_file(temp_private_keys).unwrap();
     }
 }
