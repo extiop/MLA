@@ -44,7 +44,7 @@ jobs:
       with:
         toolchain: stable
     - name: Set target if any
-      if: matrix.target
+      if: matrix.target && !contains(matrix.target, 'win7')
       run: rustup target add ${{ matrix.target }}
     - name: Install rust-src (only for win7)
       if: contains(matrix.target, 'win7')
