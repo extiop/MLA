@@ -62,19 +62,45 @@ jobs:
               ./target/x86_64-pc-windows-msvc/debug/mla.dll
               ./target/x86_64-pc-windows-msvc/debug/mla.dll.lib
               ./target/x86_64-pc-windows-msvc/debug/mla.pdb
+          - build: windows-i686-win7
+            os: windows-latest
+            target: i686-win7-windows-msvc
+            msvc_platform: Win32
+            cargo_arg: --release -Z build-std
+            path: |
+              ./target/i686-win7-windows-msvc/release/mla.lib
+              ./target/i686-win7-windows-msvc/release/mla.dll
+              ./target/i686-win7-windows-msvc/release/mla.dll.lib
+              ./target/i686-win7-windows-msvc/release/mla.pdb
+          - build: windows-x86_64-win7
+            os: windows-latest
+            target: x86_64-win7-windows-msvc
+            msvc_platform: x64
+            cargo_arg: --release -Z build-std
+            path: |
+              ./target/x86_64-win7-windows-msvc/release/mla.lib
+              ./target/x86_64-win7-windows-msvc/release/mla.dll
+              ./target/x86_64-win7-windows-msvc/release/mla.dll.lib
+              ./target/x86_64-win7-windows-msvc/release/mla.pdb
 
     runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
     - uses: actions-rs/toolchain@b2417cde72dcf67f306c0ae8e0828a81bf0b189f # v1.0.6
+      if: matrix.target && !contains(matrix.target, 'win7')
       with:
         toolchain: stable
         target: ${{ matrix.target }}
     - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2.0.0
       if: matrix.msvc_platform
+    - name: Install rust-src (only for win7)
+      if: contains(matrix.target, 'win7')
+      run: rustup component add rust-src
     - name: Build static library
       uses: actions-rs/cargo@ae10961054e4aa8b4aa7dffede299aaf087aa33b # v1.0.1
+      env:
+        RUSTC_BOOTSTRAP: "${{ contains(matrix.target, 'win7') && '1' || '' }}"
       with:
         command: build
         args: ${{ matrix.cargo_arg }} --manifest-path=bindings/C/Cargo.toml --target=${{ matrix.target }}
@@ -146,6 +172,18 @@ jobs:
           name: mla-windows-x86_64-debug
           path: mla-windows-x86_64-debug
 
+      - name: Download windows-i686-win7 artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: mla-windows-i686-win7
+          path: mla-windows-i686-win7
+
+      - name: Download windows-x86_64-win7 artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: mla-windows-x86_64-win7
+          path: mla-windows-x86_64-win7
+
       - name: Release Linux artifact
         uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1.0.2
         env:
@@ -162,6 +200,8 @@ jobs:
           zip --junk-paths windows-x86_64 mla-windows-x86_64/mla.dll mla-windows-x86_64/mla.lib mla-windows-x86_64/mla.dll.lib mla-windows-x86_64/mla.pdb
           zip --junk-paths windows-i686-debug mla-windows-i686-debug/mla.dll mla-windows-i686-debug/mla.lib mla-windows-i686-debug/mla.dll.lib mla-windows-i686-debug/mla.pdb
           zip --junk-paths windows-x86_64-debug mla-windows-x86_64-debug/mla.dll mla-windows-x86_64-debug/mla.lib mla-windows-x86_64-debug/mla.dll.lib mla-windows-x86_64-debug/mla.pdb
+          zip --junk-paths windows-i686-win7 mla-windows-i686-win7/mla.dll mla-windows-i686-win7/mla.lib mla-windows-i686-win7/mla.dll.lib mla-windows-i686-win7/mla.pdb
+          zip --junk-paths windows-x86_64-win7 mla-windows-x86_64-win7/mla.dll mla-windows-x86_64-win7/mla.lib mla-windows-x86_64-win7/mla.dll.lib mla-windows-x86_64-win7/mla.pdb
 
       - name: Release windows-i686
         uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5 # v1.0.2
@@ -202,6 +242,26 @@ jobs:
           asset_path: ./windows-x86_64-debug.zip
           asset_content_type: application/zip
           asset_name: libmla-windows-x86_64-debug-${{ steps.get_version.outputs.VERSION }}.zip
+
+      - name: Release windows-i686-win7
+        uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./windows-i686-win7.zip
+          asset_content_type: application/zip
+          asset_name: libmla-windows-i686-win7-${{ steps.get_version.outputs.VERSION }}.zip
+
+      - name: Release windows-x86_64-win7
+        uses: actions/upload-release-asset@e8f9f06c4b078e705bd2ea027f0926603fc9b4d5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./windows-x86_64-win7.zip
+          asset_content_type: application/zip
+          asset_name: libmla-windows-x86_64-win7-${{ steps.get_version.outputs.VERSION }}.zip
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Release C Header file
