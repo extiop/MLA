@@ -138,7 +138,10 @@ jobs:
         # If there's no exact match, fall back to older caches for the same target
         restore-keys: |
           build-std-${{ runner.os }}-${{ matrix.target }}-
-    - name: Build static library
+    - name: Build static library (inside container)
+      if: matrix.container != null
+      run: cargo build ${{ matrix.cargo_arg }} --manifest-path=bindings/C/Cargo.toml --target=${{ matrix.target }}
+    - name: Build static library (outside container)
       uses: actions-rs/cargo@ae10961054e4aa8b4aa7dffede299aaf087aa33b # v1.0.1
       if: matrix.container == null
       env:
